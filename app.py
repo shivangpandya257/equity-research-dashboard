@@ -16,26 +16,35 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for Wall Street / Buy-Side Theme
+# Custom CSS for Wall Street / Buy-Side Theme & Metric Card Fix
 st.markdown("""
 <style>
-    .main { background-color: #F8F9FA; }
-    .stMetric {
-        background-color: #FFFFFF;
-        padding: 15px;
-       .stMetric {
+    /* Metric Container Styling */
+    div[data-testid="stMetric"] {
         background-color: #1E293B !important;
-        padding: 15px;
-        border-radius: 8px;
-        border: 1px solid #334155;
+        border: 1px solid #334155 !important;
+        border-radius: 8px !important;
+        padding: 15px !important;
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.2) !important;
     }
+    
+    /* Value Text Color */
     div[data-testid="stMetricValue"] {
         color: #F8FAFC !important;
-        font-weight: bold;
+        font-weight: bold !important;
     }
+    
+    /* Label Text Color */
     div[data-testid="stMetricLabel"] {
         color: #94A3B8 !important;
+        font-weight: 600 !important;
     }
+    
+    /* Delta Color Fix */
+    div[data-testid="stMetricDelta"] {
+        font-weight: 600 !important;
+    }
+</style>
 """, unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
@@ -122,13 +131,10 @@ upside_pct = ((dcf_target - cmp) / cmp) * 100
 
 if upside_pct > 15:
     recommendation = "BUY"
-    rec_class = "metric-buy"
 elif upside_pct < -10:
     recommendation = "SELL"
-    rec_class = "metric-sell"
 else:
     recommendation = "HOLD"
-    rec_class = "metric-hold"
 
 # -----------------------------------------------------------------------------
 # 4. DASHBOARD HEADER & KPI CARDS
