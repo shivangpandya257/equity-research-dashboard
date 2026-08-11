@@ -219,6 +219,36 @@ if view_mode == "Interactive Concall & Guidance Matrix":
         st.info("No concall notes logged yet for this stock. Fill the form above to add your first note.")
 
 # --- VIEW: OVERVIEW & THESIS TRACKER ---
+# --- VIEW: OVERVIEW & THESIS TRACKER ---
+elif view_mode == "Overview & Thesis Tracker":
+    st.subheader(f"Financial Growth Trajectory & Notes - {selected_company}")
+    st.info(f"**Latest Management Tone:** {df_concalls.iloc[0]['management_tone'] if not df_concalls.empty else 'Not Logged'}")
+    
+    # Safe database query wrapped in try-except
+    try:
+        conn = get_db_connection()
+        df_q = pd.read_sql_query(
+            "SELECT * FROM quarterly_financials WHERE ticker = ? ORDER BY quarter_date ASC", 
+            conn, 
+            params=(selected_ticker,)
+        )
+        conn.close()
+    except Exception:
+        df_q = pd.DataFrame()
+    
+    if not df_q.empty:
+        fig = go.Figure()
+        fig.add_trace(go.Bar(x=df_q['quarter_date'], y=df_q['revenue']/1e7, name="Revenue (₹ Cr)", marker_color="#1B365D"))
+        fig.add_trace(go.Scatter(x=df_q['quarter_date'], y=df_q['net_profit']/1e7, name="Net Profit (₹ Cr)", yaxis="y2", line=dict(color="#28A745", width=3)))
+        fig.update_layout(
+            title="Automated Quarterly Results Trajectory",
+            yaxis=dict(title="Revenue (₹ Cr)"),
+            yaxis2=dict(title="Net Profit (₹ Cr)", overlaying="y", side="right"),
+            height=400
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.warning("⚠️ No quarterly automated data found in DB yet. Run `python fetch_quarterly_data.py` to populate quarterly metrics.")
 elif view_mode == "Overview & Thesis Tracker":
     st.subheader(f"Financial Growth Trajectory & Notes - {selected_company}")
     st.info(f"**Latest Management Tone:** {df_concalls.iloc[0]['management_tone'] if not df_concalls.empty else 'Not Logged'}")
