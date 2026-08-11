@@ -54,7 +54,7 @@ def load_latest_concall_data(ticker):
     return df
 
 def seed_initial_universe_if_empty():
-    """Seeds default stock universe if DB is brand new."""
+    """Seeds default stock universe and ensures all required tables exist."""
     conn = get_db_connection()
     cursor = conn.cursor()
     
@@ -81,6 +81,18 @@ def seed_initial_universe_if_empty():
             adj_wacc REAL,
             adj_growth REAL,
             timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS quarterly_financials (
+            ticker TEXT,
+            quarter_date TEXT,
+            revenue REAL,
+            ebitda REAL,
+            net_profit REAL,
+            last_updated TEXT,
+            PRIMARY KEY (ticker, quarter_date)
         )
     """)
     
@@ -219,7 +231,6 @@ if view_mode == "Interactive Concall & Guidance Matrix":
         st.info("No concall notes logged yet for this stock. Fill the form above to add your first note.")
 
 # --- VIEW: OVERVIEW & THESIS TRACKER ---
-# --- VIEW: OVERVIEW & THESIS TRACKER ---
 elif view_mode == "Overview & Thesis Tracker":
     st.subheader(f"Financial Growth Trajectory & Notes - {selected_company}")
     st.info(f"**Latest Management Tone:** {df_concalls.iloc[0]['management_tone'] if not df_concalls.empty else 'Not Logged'}")
@@ -249,28 +260,6 @@ elif view_mode == "Overview & Thesis Tracker":
         st.plotly_chart(fig, use_container_width=True)
     else:
         st.warning("⚠️ No quarterly automated data found in DB yet. Run `python fetch_quarterly_data.py` to populate quarterly metrics.")
-elif view_mode == "Overview & Thesis Tracker":
-    st.subheader(f"Financial Growth Trajectory & Notes - {selected_company}")
-    st.info(f"**Latest Management Tone:** {df_concalls.iloc[0]['management_tone'] if not df_concalls.empty else 'Not Logged'}")
-    
-    # Read quarterly results stored in DB by Step 1
-    conn = get_db_connection()
-    df_q = pd.read_sql_query("SELECT * FROM quarterly_financials WHERE ticker = ? ORDER BY quarter_date ASC", conn, params=(selected_ticker,))
-    conn.close()
-    
-    if not df_q.empty:
-        fig = go.Figure()
-        fig.add_trace(go.Bar(x=df_q['quarter_date'], y=df_q['revenue']/1e7, name="Revenue (₹ Cr)", marker_color="#1B365D"))
-        fig.add_trace(go.Scatter(x=df_q['quarter_date'], y=df_q['net_profit']/1e7, name="Net Profit (₹ Cr)", yaxis="y2", line=dict(color="#28A745", width=3)))
-        fig.update_layout(
-            title="Automated Quarterly Results Trajectory (Fetched by Step 1)",
-            yaxis=dict(title="Revenue (₹ Cr)"),
-            yaxis2=dict(title="Net Profit (₹ Cr)", overlaying="y", side="right"),
-            height=400
-        )
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.warning("No quarterly automated data found in DB yet. Run `python fetch_quarterly_data.py` to populate.")
 
 # --- VIEW: 3-STAGE DCF VALUATION ---
 elif view_mode == "3-Stage DCF Valuation":
