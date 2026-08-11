@@ -1,280 +1,262 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import sqlite3
 import plotly.graph_objects as go
-import plotly.express as px
 import yfinance as yf
-import os
 
 # -----------------------------------------------------------------------------
 # 1. PAGE CONFIGURATION & STYLING
 # -----------------------------------------------------------------------------
 st.set_page_config(
-    page_title="Institutional Equity Research Dashboard",
+    page_title="Institutional Equity Research Hub (50+ Coverage)",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for Wall Street / Buy-Side Theme & Metric Card Fix
 st.markdown("""
 <style>
-    /* Metric Container Styling */
     div[data-testid="stMetric"] {
         background-color: #1E293B !important;
         border: 1px solid #334155 !important;
         border-radius: 8px !important;
         padding: 15px !important;
-        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.2) !important;
     }
-    
-    /* Value Text Color */
-    div[data-testid="stMetricValue"] {
-        color: #F8FAFC !important;
-        font-weight: bold !important;
-    }
-    
-    /* Label Text Color */
-    div[data-testid="stMetricLabel"] {
-        color: #94A3B8 !important;
-        font-weight: 600 !important;
-    }
-    
-    /* Delta Color Fix */
-    div[data-testid="stMetricDelta"] {
-        font-weight: 600 !important;
-    }
+    div[data-testid="stMetricValue"] { color: #F8FAFC !important; font-weight: bold; }
+    div[data-testid="stMetricLabel"] { color: #94A3B8 !important; font-weight: 600; }
 </style>
 """, unsafe_allow_html=True)
 
-# -----------------------------------------------------------------------------
-# 2. HELPER FUNCTIONS & DATA LOADERS
-# -----------------------------------------------------------------------------
-@st.cache_data(ttl=300)
-def fetch_live_stock_data(ticker_symbol):
-    """Fetch live stock price & fundamentals via Yahoo Finance."""
-    try:
-        stock = yf.Ticker(ticker_symbol)
-        info = stock.info
-        current_price = info.get("currentPrice") or info.get("regularMarketPrice") or 1259.30
-        prev_close = info.get("previousClose") or current_price
-        day_change_pct = ((current_price - prev_close) / prev_close) * 100
-        return current_price, day_change_pct, info
-    except Exception:
-        # Fallback values if ticker format is offline or delayed
-        return 1259.30, 0.85, {"shortName": "Jyoti CNC Automation", "sector": "Capital Goods"}
-
-def load_excel_model(file_path):
-    """Load data tabs from the Institutional Excel Model."""
-    if os.path.exists(file_path):
-        xls = pd.ExcelFile(file_path)
-        df_dashboard = pd.read_excel(xls, "Dashboard_&_Concall", skiprows=10)
-        df_fin = pd.read_excel(xls, "Financial_Model")
-        df_dupont = pd.read_excel(xls, "DuPont_Decomposition", skiprows=1)
-        return df_dashboard, df_fin, df_dupont
-    else:
-        # Fallback mock data structure matching the generated Excel model
-        concall_data = {
-            "Quarter": ["Q1 FY27", "Q4 FY26", "Q3 FY26"],
-            "Revenue Guidance": ["20-25% YoY", "18-20% YoY", "15-18% YoY"],
-            "Margin Guidance": ["21.5% EBITDA", "21.0% EBITDA", "20.5% EBITDA"],
-            "CapEx Plans": ["Scale 6k -> 16k capacity", "Plant 3 expansion", "Land acquisition"],
-            "Order Book / Backlog": ["₹3,400 Cr", "₹3,100 Cr", "₹2,850 Cr"],
-            "Management Tone": ["Confident", "Bullish", "Cautious"],
-            "Key Risks Flagged": ["Promoter Pledge & NWC Cycle", "Working capital", "Raw material inflation"]
-        }
-        dupont_data = {
-            "DuPont Component": [
-                "1. Operating Profit Margin (EBIT / Sales)",
-                "2. Asset Turnover Ratio",
-                "3. Interest Burden Factor",
-                "4. Tax Retention Rate",
-                "5. Financial Leverage Multiplier",
-                "COMPOSITE RETURN ON EQUITY (ROE)"
-            ],
-            "FY24": [0.146, 0.65, 0.78, 0.75, 1.85, 0.101],
-            "FY25": [0.166, 0.72, 0.82, 0.75, 1.72, 0.132],
-            "FY26E": [0.177, 0.78, 0.85, 0.75, 1.60, 0.158],
-            "FY27E": [0.180, 0.85, 0.88, 0.75, 1.50, 0.180]
-        }
-        return pd.DataFrame(concall_data), None, pd.DataFrame(dupont_data)
+DB_NAME = "coverage_hub.db"
 
 # -----------------------------------------------------------------------------
-# 3. SIDEBAR NAVIGATION & INPUTS
+# 2. DATABASE UTILITY FUNCTIONS
+# -----------------------------------------------------------------------------
+def get_db_connection():
+    return sqlite3.connect(DB_NAME)
+
+def load_stock_universe():
+    conn = get_db_connection()
+    df = pd.read_sql_query("SELECT * FROM stock_universe ORDER BY company_name ASC", conn)
+    conn.close()
+    return df
+
+def load_latest_concall_data(ticker):
+    conn = get_db_connection()
+    query = """
+        SELECT * FROM concall_logs 
+        WHERE ticker_symbol = ? 
+        ORDER BY timestamp DESC
+    """
+    df = pd.read_sql_query(query, conn, params=(ticker,))
+    conn.close()
+    return df
+
+def seed_initial_universe_if_empty():
+    """Seeds default stock universe if DB is brand new."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS stock_universe (
+            ticker_symbol TEXT PRIMARY KEY,
+            company_name TEXT,
+            sector TEXT,
+            base_target_price REAL,
+            base_wacc REAL,
+            base_terminal_g REAL
+        )
+    """)
+    
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS concall_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticker_symbol TEXT,
+            quarter TEXT,
+            rev_guidance TEXT,
+            margin_guidance TEXT,
+            management_tone TEXT,
+            analyst_notes TEXT,
+            adj_wacc REAL,
+            adj_growth REAL,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    
+    cursor.execute("SELECT COUNT(*) FROM stock_universe")
+    count = cursor.fetchone()[0]
+    
+    if count == 0:
+        default_stocks = [
+            ("JYOTICNC.NS", "Jyoti CNC Automation", "Capital Goods", 1680.50, 10.8, 4.5),
+            ("AXISBANK.NS", "Axis Bank", "Banking & Financials", 1480.00, 11.5, 5.0),
+            ("RELIANCE.NS", "Reliance Industries", "Energy / Retail / Telecom", 3550.00, 9.5, 4.5),
+            ("LT.NS", "Larsen & Toubro", "Engineering & EPC", 4250.00, 10.2, 4.5),
+            ("TCS.NS", "Tata Consultancy Services", "IT Services", 4500.00, 9.0, 5.0),
+            ("INFY.NS", "Infosys", "IT Services", 2100.00, 9.2, 4.8),
+            ("HDFCBANK.NS", "HDFC Bank", "Banking & Financials", 2000.00, 10.5, 5.2)
+        ]
+        cursor.executemany("INSERT INTO stock_universe VALUES (?,?,?,?,?,?)", default_stocks)
+        conn.commit()
+    conn.close()
+
+seed_initial_universe_if_empty()
+
+# -----------------------------------------------------------------------------
+# 3. SIDEBAR NAVIGATION & 50+ STOCK SELECTOR
 # -----------------------------------------------------------------------------
 st.sidebar.image("https://img.icons8.com/color/96/000000/line-chart.png", width=60)
 st.sidebar.title("Buy-Side Research Hub")
 
-stock_list = {
-    "Jyoti CNC Automation": "JYOTICNC.NS",
-    "Axis Bank": "AXISBANK.NS",
-    "Reliance Industries": "RELIANCE.NS",
-    "Larsen & Toubro": "LT.NS"
-}
+df_universe = load_stock_universe()
+stock_dict = dict(zip(df_universe['company_name'], df_universe['ticker_symbol']))
 
-selected_stock = st.sidebar.selectbox("Select Coverage Stock", list(stock_list.keys()))
-ticker = stock_list[selected_stock]
+selected_company = st.sidebar.selectbox("Select Coverage Stock", list(stock_dict.keys()))
+selected_ticker = stock_dict[selected_company]
 
-st.sidebar.markdown("---")
+# Extract current stock base record
+stock_info = df_universe[df_universe['ticker_symbol'] == selected_ticker].iloc[0]
+
 view_mode = st.sidebar.radio(
     "Dashboard View",
-    ["Overview & Thesis Tracker", "3-Stage DCF Valuation", "5-Stage DuPont ROE", "Concall & Guidance Matrix"]
+    ["Overview & Thesis Tracker", "Interactive Concall & Guidance Matrix", "3-Stage DCF Valuation"]
 )
 
-# Fetch Live Data
-cmp, change_pct, stock_info = fetch_live_stock_data(ticker)
-df_concall, df_fin, df_dupont = load_excel_model("Institutional_Equity_Research_Model.xlsx")
+# Fetch Live CMP via yfinance
+try:
+    live_stock = yf.Ticker(selected_ticker)
+    cmp = live_stock.info.get("currentPrice") or live_stock.info.get("regularMarketPrice") or 1000.0
+    prev_close = live_stock.info.get("previousClose") or cmp
+    day_change_pct = ((cmp - prev_close) / prev_close) * 100
+except Exception:
+    cmp, day_change_pct = 1000.0, 0.0
 
-# Fixed Valuation Base from DCF Model
-dcf_target = 1680.50  # DCF Target Price from Excel
-upside_pct = ((dcf_target - cmp) / cmp) * 100
+# -----------------------------------------------------------------------------
+# 4. DYNAMIC VALUATION CALCULATION (Driven by Concall Adjustments)
+# -----------------------------------------------------------------------------
+df_concalls = load_latest_concall_data(selected_ticker)
 
-if upside_pct > 15:
-    recommendation = "BUY"
-elif upside_pct < -10:
-    recommendation = "SELL"
+# If analyst logged custom assumptions in recent concall, override base valuation
+if not df_concalls.empty and pd.notnull(df_concalls.iloc[0]['adj_wacc']):
+    latest_log = df_concalls.iloc[0]
+    active_wacc = latest_log['adj_wacc']
+    active_growth = latest_log['adj_growth']
+    
+    # Dynamic valuation adjustment relative to base parameters
+    wacc_diff = (stock_info['base_wacc'] - active_wacc) / 100.0
+    g_diff = (active_growth - stock_info['base_terminal_g']) / 100.0
+    
+    # Adjusted Target Price Formula
+    dcf_target = stock_info['base_target_price'] * (1 + (g_diff * 1.5) + (wacc_diff * 2.0))
+    valuation_status = f"Adjusted via Concall ({latest_log['quarter']})"
 else:
-    recommendation = "HOLD"
+    active_wacc = stock_info['base_wacc']
+    active_growth = stock_info['base_terminal_g']
+    dcf_target = stock_info['base_target_price']
+    valuation_status = "Base Model Value"
+
+upside_pct = ((dcf_target - cmp) / cmp) * 100
+recommendation = "BUY" if upside_pct > 15 else ("SELL" if upside_pct < -10 else "HOLD")
 
 # -----------------------------------------------------------------------------
-# 4. DASHBOARD HEADER & KPI CARDS
+# 5. DASHBOARD HEADER & KPI CARDS
 # -----------------------------------------------------------------------------
-st.title(f"📊 {selected_stock} ({ticker.replace('.NS', '')})")
-st.caption(f"Sector: {stock_info.get('sector', 'Capital Goods')} | Horizon: 4-5 Years Structural Hold")
+st.title(f"📊 {selected_company} ({selected_ticker.replace('.NS', '')})")
+st.caption(f"Sector: {stock_info['sector']} | Valuation Mode: {valuation_status}")
 
-kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
-with kpi1:
-    st.metric("Live Market Price (CMP)", f"₹{cmp:,.2f}", f"{change_pct:+.2f}%")
-with kpi2:
-    st.metric("DCF Intrinsic Value", f"₹{dcf_target:,.2f}")
-with kpi3:
-    st.metric("Implied Upside", f"{upside_pct:+.1f}%")
-with kpi4:
-    st.metric("Recommendation", recommendation)
-with kpi5:
-    st.metric("Margin of Safety (MOS)", "25.1%", "Target > 20%")
+k1, k2, k3, k4 = st.columns(4)
+with k1: st.metric("Live Price (CMP)", f"₹{cmp:,.2f}", f"{day_change_pct:+.2f}%")
+with k2: st.metric("Dynamic DCF Target", f"₹{dcf_target:,.2f}")
+with k3: st.metric("Implied Upside", f"{upside_pct:+.1f}%")
+with k4: st.metric("Recommendation", recommendation)
 
 st.markdown("---")
 
 # -----------------------------------------------------------------------------
-# 5. VIEW MODES
+# 6. VIEW MODES
 # -----------------------------------------------------------------------------
 
-# --- VIEW 1: OVERVIEW & THESIS TRACKER ---
-if view_mode == "Overview & Thesis Tracker":
-    col_left, col_right = st.columns([2, 1])
+# --- VIEW: CONCALL & GUIDANCE MATRIX (LOGGING ENGINE) ---
+if view_mode == "Interactive Concall & Guidance Matrix":
+    st.subheader(f"📝 Concall Notes & Dynamic Valuation Driver - {selected_company}")
     
-    with col_left:
-        st.subheader("Multi-Year Revenue & EBITDA Forecast Trajectory")
+    # Form to log new quarterly call takeaways
+    with st.form("concall_entry_form"):
+        st.markdown("### Log New Quarterly Concall Takeaways")
+        c1, c2 = st.columns(2)
+        with c1:
+            quarter = st.text_input("Quarter Period", "Q3 FY27")
+            rev_guidance = st.text_input("Revenue Guidance", "18-20% YoY Growth")
+            margin_guidance = st.text_input("EBITDA / Margin Guidance", "21.5% EBITDA")
+            tone = st.selectbox("Management Tone", ["Very Bullish", "Confident", "Cautious", "Bearish"])
         
-        years = ["FY23", "FY24", "FY25", "FY26E", "FY27E", "FY28E", "FY29E", "FY30E"]
-        revenue = [900, 1200, 1500, 1850, 2300, 2800, 3350, 3950]
-        ebitda = [135, 216, 300, 388, 494, 616, 753, 908]
+        with c2:
+            st.markdown("**Adjust Valuation Parameters based on Call:**")
+            adj_wacc = st.number_input("Discount Rate / WACC (%)", 5.0, 20.0, float(active_wacc), 0.1)
+            adj_growth = st.number_input("Terminal Growth Rate (%)", 1.0, 10.0, float(active_growth), 0.1)
+            analyst_notes = st.text_area("Key Analyst Concall Notes & Takeaways")
+            
+        submit = st.form_submit_button("💾 Save Concall Note & Update Intrinsic Target Price")
+        
+        if submit:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO concall_logs (ticker_symbol, quarter, rev_guidance, margin_guidance, management_tone, analyst_notes, adj_wacc, adj_growth)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (selected_ticker, quarter, rev_guidance, margin_guidance, tone, analyst_notes, adj_wacc, adj_growth))
+            conn.commit()
+            conn.close()
+            st.success(f"Concall takeaways for {quarter} logged! Intrinsic Target Price updated across app.")
+            st.rerun()
 
+    st.markdown("---")
+    st.subheader("📜 Historical Concall Logs")
+    if not df_concalls.empty:
+        st.dataframe(df_concalls[['quarter', 'management_tone', 'rev_guidance', 'margin_guidance', 'adj_wacc', 'adj_growth', 'analyst_notes', 'timestamp']], use_container_width=True)
+    else:
+        st.info("No concall notes logged yet for this stock. Fill the form above to add your first note.")
+
+# --- VIEW: OVERVIEW & THESIS TRACKER ---
+elif view_mode == "Overview & Thesis Tracker":
+    st.subheader(f"Financial Growth Trajectory & Notes - {selected_company}")
+    st.info(f"**Latest Management Tone:** {df_concalls.iloc[0]['management_tone'] if not df_concalls.empty else 'Not Logged'}")
+    
+    # Read quarterly results stored in DB by Step 1
+    conn = get_db_connection()
+    df_q = pd.read_sql_query("SELECT * FROM quarterly_financials WHERE ticker = ? ORDER BY quarter_date ASC", conn, params=(selected_ticker,))
+    conn.close()
+    
+    if not df_q.empty:
         fig = go.Figure()
-        fig.add_trace(go.Bar(x=years, y=revenue, name="Revenue (₹ Cr)", marker_color="#1B365D"))
-        fig.add_trace(go.Scatter(x=years, y=ebitda, name="EBITDA (₹ Cr)", yaxis="y2", line=dict(color="#28A745", width=3)))
-
+        fig.add_trace(go.Bar(x=df_q['quarter_date'], y=df_q['revenue']/1e7, name="Revenue (₹ Cr)", marker_color="#1B365D"))
+        fig.add_trace(go.Scatter(x=df_q['quarter_date'], y=df_q['net_profit']/1e7, name="Net Profit (₹ Cr)", yaxis="y2", line=dict(color="#28A745", width=3)))
         fig.update_layout(
+            title="Automated Quarterly Results Trajectory (Fetched by Step 1)",
             yaxis=dict(title="Revenue (₹ Cr)"),
-            yaxis2=dict(title="EBITDA (₹ Cr)", overlaying="y", side="right"),
-            legend=dict(x=0.01, y=0.99),
-            margin=dict(l=20, r=20, t=30, b=20),
-            height=380
+            yaxis2=dict(title="Net Profit (₹ Cr)", overlaying="y", side="right"),
+            height=400
         )
         st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.warning("No quarterly automated data found in DB yet. Run `python fetch_quarterly_data.py` to populate.")
 
-    with col_right:
-        st.subheader("Core Investment Thesis")
-        st.info("""
-        * **Capacity Expansion:** Scale capacity from 6,000 to 16,000 CNC machines per year.
-        * **Operating Leverage:** EBITDA margins expanding from 15.0% to 23.0% over 5 years.
-        * **Order Book Visibility:** Robust order backlog standing at >₹3,400 Cr giving 2+ years revenue visibility.
-        """)
-        
-        st.subheader("Governance & Risk Radar")
-        st.warning("""
-        * **Promoter Pledge:** Currently at **20.92%** (Pledged to support operational credit limits).
-        * **Working Capital:** Receivables cycle stretched to 140 days due to long-cycle capital equipment deliveries.
-        """)
-
-# --- VIEW 2: 3-STAGE DCF VALUATION ---
+# --- VIEW: 3-STAGE DCF VALUATION ---
 elif view_mode == "3-Stage DCF Valuation":
-    st.subheader("3-Stage Unlevered DCF Sensitivity & Outputs")
+    st.subheader(f"Dynamic DCF Sensitivity - {selected_company}")
+    st.write(f"**Active WACC:** {active_wacc}% | **Active Terminal Growth:** {active_growth}%")
     
-    d1, d2, d3 = st.columns(3)
-    with d1:
-        wacc = st.slider("WACC Discount Rate (%)", 8.0, 14.0, 10.8, 0.1) / 100
-    with d2:
-        terminal_g = st.slider("Terminal Growth Rate (%)", 3.0, 6.0, 4.5, 0.1) / 100
-    with d3:
-        exit_multiple = st.number_input("Target Exit EV/EBITDA Multiple", 10.0, 35.0, 22.0)
-
-    # Dynamic Sensitivity Matrix Calculation
-    st.subheader("Dynamic Target Price Sensitivity Matrix (WACC vs. Terminal Growth)")
-    
-    wacc_range = np.linspace(wacc - 0.01, wacc + 0.01, 5)
-    g_range = np.linspace(terminal_g - 0.005, terminal_g + 0.005, 5)
+    wacc_range = np.linspace(active_wacc - 1.0, active_wacc + 1.0, 5)
+    g_range = np.linspace(active_growth - 0.5, active_growth + 0.5, 5)
     
     matrix = []
     for w in wacc_range:
         row = []
         for g in g_range:
-            # Simplified DCF Sensitivity Formula
-            val = dcf_target * (1 + (terminal_g - g) - (wacc - w) * 2)
+            val = dcf_target * (1 + (g - active_growth)/100.0 - (w - active_wacc)/50.0)
             row.append(f"₹{val:,.1f}")
         matrix.append(row)
         
-    df_sensitivity = pd.DataFrame(
-        matrix, 
-        index=[f"WACC {w*100:.1f}%" for w in wacc_range],
-        columns=[f"g {g*100:.1f}%" for g in g_range]
-    )
-    st.dataframe(df_sensitivity, use_container_width=True)
-
-# --- VIEW 3: 5-STAGE DUPONT ROE ---
-elif view_mode == "5-Stage DuPont ROE":
-    st.subheader("5-Stage DuPont ROE Driver Decomposition")
-    
-    st.dataframe(df_dupont, use_container_width=True)
-    
-    # ROE Progression Chart
-    roe_row = df_dupont[df_dupont["DuPont Component"].str.contains("COMPOSITE", na=False)]
-    if not roe_row.empty:
-        years_dupont = ["FY24", "FY25", "FY26E", "FY27E"]
-        roe_values = [roe_row[y].values[0] * 100 for y in years_dupont]
-        
-        fig_roe = px.line(
-            x=years_dupont, y=roe_values, text=[f"{v:.1f}%" for v in roe_values],
-            title="Return on Equity (ROE) Trajectory (%)",
-            labels={"x": "Fiscal Year", "y": "ROE (%)"}
-        )
-        fig_roe.update_traces(textposition="top center", line=dict(color="#1B365D", width=3))
-        fig_roe.update_layout(height=350)
-        st.plotly_chart(fig_roe, use_container_width=True)
-
-# --- VIEW 4: CONCALL & GUIDANCE MATRIX ---
-elif view_mode == "Concall & Guidance Matrix":
-    st.subheader("Management Quarterly Guidance & Execution Matrix")
-    st.dataframe(df_concall, use_container_width=True)
-    
-    st.subheader("Log New Concall / Management Transcript Notes")
-    with st.form("concall_form"):
-        f1, f2 = st.columns(2)
-        with f1:
-            q_name = st.text_input("Quarter", "Q2 FY27")
-            rev_guidance = st.text_input("Revenue Guidance", "22-25% YoY")
-            margin_guidance = st.text_input("Margin Guidance", "22.0% EBITDA")
-        with f2:
-            tone = st.selectbox("Management Tone", ["Very Bullish", "Confident", "Neutral", "Cautious"])
-            notes = st.text_area("Key Analyst takeaways")
-        
-        submit_button = st.form_submit_button("Save Concall Note to Excel Model")
-        if submit_button:
-            st.success(f"Concall note for {q_name} added successfully!")
-
-# -----------------------------------------------------------------------------
-# 6. FOOTER
-# -----------------------------------------------------------------------------
-st.markdown("---")
-st.caption("Institutional Equity Research Dashboard | Built for Long-Term Portfolio Tracking")
+    df_matrix = pd.DataFrame(matrix, index=[f"WACC {w:.1f}%" for w in wacc_range], columns=[f"g {g:.1f}%" for g in g_range])
+    st.dataframe(df_matrix, use_container_width=True)
