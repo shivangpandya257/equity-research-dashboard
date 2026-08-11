@@ -23,15 +23,19 @@ st.markdown("""
     .stMetric {
         background-color: #FFFFFF;
         padding: 15px;
+       .stMetric {
+        background-color: #1E293B !important;
+        padding: 15px;
         border-radius: 8px;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-        border: 1px solid #E9ECEF;
+        border: 1px solid #334155;
     }
-    .metric-buy { border-left: 5px solid #28A745 !important; }
-    .metric-hold { border-left: 5px solid #FFC107 !important; }
-    .metric-sell { border-left: 5px solid #DC3545 !important; }
-    h1, h2, h3 { color: #1B365D; font-family: 'Segoe UI', sans-serif; }
-</style>
+    div[data-testid="stMetricValue"] {
+        color: #F8FAFC !important;
+        font-weight: bold;
+    }
+    div[data-testid="stMetricLabel"] {
+        color: #94A3B8 !important;
+    }
 """, unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
