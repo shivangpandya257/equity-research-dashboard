@@ -31,7 +31,7 @@ st.markdown("""
 DB_NAME = "coverage_hub.db"
 
 # -----------------------------------------------------------------------------
-# 2. DATABASE UTILITY FUNCTIONS
+# 2. DATABASE UTILITY & AUTO-FETCH FUNCTIONS
 # -----------------------------------------------------------------------------
 def get_db_connection():
     return sqlite3.connect(DB_NAME)
@@ -112,6 +112,81 @@ def seed_initial_universe_if_empty():
         cursor.executemany("INSERT INTO stock_universe VALUES (?,?,?,?,?,?)", default_stocks)
         conn.commit()
     conn.close()
+
+def get_or_fetch_quarterly_financials(ticker_symbol):
+    """Fetches quarterly financials from DB. If empty, automatically pulls live data from yfinance."""
+    conn = get_db_connection()
+    df_q = pd.read_sql_query(
+        "SELECT * FROM quarterly_financials WHERE ticker = ? ORDER BY quarter_date ASC",
+        conn,
+        params=(ticker_symbol,)
+    )
+    
+    # If DB has data, return immediately
+    if not df_q.empty:
+        conn.close()
+        return df_q
+        
+    # If empty, pull on-the-fly from yfinance
+    try:
+        stock = yf.Ticker(ticker_symbol)
+        q_stmt = stock.quarterly_income_stmt
+        if q_stmt is None or q_stmt.empty:
+            q_stmt = stock.quarterly_financials
+            
+        if q_stmt is not None and not q_stmt.empty:
+            rows_to_insert = []
+            for date_col in q_stmt.columns:
+                q_date = str(date_col).split(' ')[0]
+                
+                # Retrieve Revenue
+                rev = 0.0
+                for k in ['Total Revenue', 'Operating Revenue', 'Revenue']:
+                    if k in q_stmt.index and pd.notnull(q_stmt.loc[k, date_col]):
+                        rev = float(q_stmt.loc[k, date_col])
+                        break
+                        
+                # Retrieve Net Profit
+                net_profit = 0.0
+                for k in ['Net Income', 'Net Income Common Stockholders', 'Net Income From Continuing Operation']:
+                    if k in q_stmt.index and pd.notnull(q_stmt.loc[k, date_col]):
+                        net_profit = float(q_stmt.loc[k, date_col])
+                        break
+                        
+                # Retrieve EBITDA / Operating Profit
+                ebitda = 0.0
+                for k in ['EBITDA', 'EBIT', 'Operating Income']:
+                    if k in q_stmt.index and pd.notnull(q_stmt.loc[k, date_col]):
+                        ebitda = float(q_stmt.loc[k, date_col])
+                        break
+
+                rows_to_insert.append((
+                    ticker_symbol,
+                    q_date,
+                    rev,
+                    ebitda,
+                    net_profit,
+                    pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
+                ))
+
+            if rows_to_insert:
+                cursor = conn.cursor()
+                cursor.executemany("""
+                    INSERT OR REPLACE INTO quarterly_financials (ticker, quarter_date, revenue, ebitda, net_profit, last_updated)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, rows_to_insert)
+                conn.commit()
+                
+        df_q = pd.read_sql_query(
+            "SELECT * FROM quarterly_financials WHERE ticker = ? ORDER BY quarter_date ASC",
+            conn,
+            params=(ticker_symbol,)
+        )
+    except Exception:
+        df_q = pd.DataFrame()
+        
+    conn.close()
+    return df_q
 
 seed_initial_universe_if_empty()
 
@@ -235,17 +310,8 @@ elif view_mode == "Overview & Thesis Tracker":
     st.subheader(f"Financial Growth Trajectory & Notes - {selected_company}")
     st.info(f"**Latest Management Tone:** {df_concalls.iloc[0]['management_tone'] if not df_concalls.empty else 'Not Logged'}")
     
-    # Safe database query wrapped in try-except
-    try:
-        conn = get_db_connection()
-        df_q = pd.read_sql_query(
-            "SELECT * FROM quarterly_financials WHERE ticker = ? ORDER BY quarter_date ASC", 
-            conn, 
-            params=(selected_ticker,)
-        )
-        conn.close()
-    except Exception:
-        df_q = pd.DataFrame()
+    # Auto-fetch quarterly financials if missing in DB
+    df_q = get_or_fetch_quarterly_financials(selected_ticker)
     
     if not df_q.empty:
         fig = go.Figure()
@@ -259,7 +325,7 @@ elif view_mode == "Overview & Thesis Tracker":
         )
         st.plotly_chart(fig, use_container_width=True)
     else:
-        st.warning("⚠️ No quarterly automated data found in DB yet. Run `python fetch_quarterly_data.py` to populate quarterly metrics.")
+        st.warning("⚠️ Fetching financial data... Try refreshing or switching to another coverage stock.")
 
 # --- VIEW: 3-STAGE DCF VALUATION ---
 elif view_mode == "3-Stage DCF Valuation":
